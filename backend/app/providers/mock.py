@@ -4,7 +4,7 @@ from app.providers.base import (
     AgentRequest,
     AgentResult,
     ProviderError,
-    ProviderRegistry,
+    ProviderHealth,
 )
 
 
@@ -32,8 +32,5 @@ class MockProvider:
 
         return AgentResult(text=text, data=data)
 
-
-def build_default_provider_registry() -> ProviderRegistry:
-    registry = ProviderRegistry()
-    registry.register(MockProvider())
-    return registry
+    async def check_health(self) -> ProviderHealth:
+        return ProviderHealth(provider=self.name, available=True, version="mock")

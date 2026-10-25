@@ -1,16 +1,31 @@
 import asyncio
+from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from app.db.models import FlowVersion, Run, StepRun, utc_now
+from app.core.config import get_settings
+from app.db.models import (
+    AgentLogRecord,
+    Artifact,
+    FlowVersion,
+    Run,
+    StepRun,
+    utc_now,
+)
 from app.engine.events import EventRecorder
 from app.engine.runs import RunNotFoundError
 from app.flows.schema import parse_flow_definition
 from app.flows.templating import render_template
-from app.providers.base import AgentRequest, ProviderRegistry
-from app.providers.mock import build_default_provider_registry
+from app.providers.base import (
+    AgentArtifact,
+    AgentLog,
+    AgentRequest,
+    ProviderExecutionError,
+    ProviderRegistry,
+)
+from app.providers.registry import build_default_provider_registry
 
 TERMINAL_STEP_STATUSES = {"succeeded", "failed", "skipped", "cancelled", "timeout"}
 
@@ -24,12 +39,16 @@ class ExecutionOutcome:
         output: dict[str, Any] | None = None,
         error: str | None = None,
         input_snapshot: dict[str, Any] | None = None,
+        logs: list[AgentLog] | None = None,
+        artifacts: list[AgentArtifact] | None = None,
     ) -> None:
         self.status = status
         self.attempt = attempt
         self.output = output
         self.error = error
         self.input_snapshot = input_snapshot
+        self.logs = logs or []
+        self.artifacts = artifacts or []
 
 
 class FlowEngine:
@@ -40,10 +59,14 @@ class FlowEngine:
         session: Session,
         *,
         providers: ProviderRegistry | None = None,
+        workspace_root: Path | None = None,
+        artifact_root: Path | None = None,
     ) -> None:
         self.session = session
         self.providers = providers or build_default_provider_registry()
         self.events = EventRecorder(session)
+        self.workspace_root = (workspace_root or get_settings().workspace_root).resolve()
+        self.artifact_root = (artifact_root or get_settings().artifact_root).resolve()
 
     async def execute(self, run_id: str) -> str:
         run = self.session.get(Run, run_id)
@@ -158,6 +181,7 @@ class FlowEngine:
                                     item for item in definition.steps if item.id == step_id
                                 ),
                                 step_run_id=step_run.id,
+                                run_id=run.id,
                                 initial_attempt=step_run.attempt,
                                 inputs=run.inputs,
                                 previous_outputs=step_output_map(),
@@ -204,7 +228,11 @@ class FlowEngine:
                     outcome = task.result()
                     step_run.attempt = outcome.attempt
                     step_run.input_snapshot = outcome.input_snapshot
-                    step_run.output = outcome.output
+                    step_run.output = self._persist_side_effects(
+                        run_id=run.id,
+                        step_run=step_run,
+                        outcome=outcome,
+                    )
                     step_run.error = outcome.error
                     step_run.status = outcome.status
                     step_run.finished_at = utc_now()
@@ -303,6 +331,7 @@ class FlowEngine:
         *,
         definition: Any,
         step_run_id: str,
+        run_id: str,
         initial_attempt: int,
         inputs: dict[str, Any],
         previous_outputs: dict[str, Any],
@@ -327,6 +356,13 @@ class FlowEngine:
             )
 
         snapshot: dict[str, Any] = {"attempt": attempt}
+        step_id = str(getattr(definition, "id", "step"))
+        step_workspace_base = self.workspace_root / run_id / step_id
+        step_artifact_base = self.artifact_root / run_id / step_id
+        working_dir = step_workspace_base / f"attempt-{attempt}"
+        artifact_dir = step_artifact_base / f"attempt-{attempt}"
+        working_dir.mkdir(parents=True, exist_ok=True)
+        artifact_dir.mkdir(parents=True, exist_ok=True)
         try:
             if step.type == "template":
                 rendered = render_template(
@@ -414,20 +450,31 @@ class FlowEngine:
                                 attempt=attempt,
                                 timeout_seconds=timeout_seconds,
                                 config=config,
+                                working_dir=working_dir,
+                                artifact_dir=artifact_dir,
                             )
                         ),
                         timeout=timeout_seconds,
                     )
                     output = {"text": result.text, "json": result.data}
+                    artifact_metadata = [self._artifact_metadata(item) for item in result.artifacts]
+                    if artifact_metadata:
+                        output["artifacts"] = artifact_metadata
                     return ExecutionOutcome(
                         status="succeeded",
                         attempt=attempt,
                         output=output,
                         input_snapshot=snapshot,
+                        logs=result.logs,
+                        artifacts=result.artifacts,
                     )
                 except TimeoutError:
                     if attempt <= max_retries:
                         attempt += 1
+                        working_dir = step_workspace_base / f"attempt-{attempt}"
+                        artifact_dir = step_artifact_base / f"attempt-{attempt}"
+                        working_dir.mkdir(parents=True, exist_ok=True)
+                        artifact_dir.mkdir(parents=True, exist_ok=True)
                         snapshot["attempt"] = attempt
                         continue
                     return ExecutionOutcome(
@@ -436,9 +483,36 @@ class FlowEngine:
                         error=f"Step timed out after {timeout_seconds} seconds",
                         input_snapshot=snapshot,
                     )
+                except ProviderExecutionError as exc:
+                    if attempt <= max_retries:
+                        attempt += 1
+                        working_dir = step_workspace_base / f"attempt-{attempt}"
+                        artifact_dir = step_artifact_base / f"attempt-{attempt}"
+                        working_dir.mkdir(parents=True, exist_ok=True)
+                        artifact_dir.mkdir(parents=True, exist_ok=True)
+                        snapshot["attempt"] = attempt
+                        continue
+                    output = None
+                    if exc.logs or exc.artifacts:
+                        output = {
+                            "artifacts": [self._artifact_metadata(item) for item in exc.artifacts]
+                        }
+                    return ExecutionOutcome(
+                        status="timeout" if exc.timed_out else "failed",
+                        attempt=attempt,
+                        output=output,
+                        error=str(exc),
+                        input_snapshot=snapshot,
+                        logs=exc.logs,
+                        artifacts=exc.artifacts,
+                    )
                 except Exception as exc:
                     if attempt <= max_retries:
                         attempt += 1
+                        working_dir = step_workspace_base / f"attempt-{attempt}"
+                        artifact_dir = step_artifact_base / f"attempt-{attempt}"
+                        working_dir.mkdir(parents=True, exist_ok=True)
+                        artifact_dir.mkdir(parents=True, exist_ok=True)
                         snapshot["attempt"] = attempt
                         continue
                     return ExecutionOutcome(
@@ -454,3 +528,55 @@ class FlowEngine:
                 error=str(exc),
                 input_snapshot=snapshot,
             )
+
+    def _persist_side_effects(
+        self,
+        *,
+        run_id: str,
+        step_run: StepRun,
+        outcome: ExecutionOutcome,
+    ) -> dict[str, Any] | None:
+        self.session.execute(
+            delete(AgentLogRecord).where(AgentLogRecord.step_run_id == step_run.id)
+        )
+        self.session.execute(delete(Artifact).where(Artifact.step_run_id == step_run.id))
+
+        for sequence, log in enumerate(outcome.logs, start=1):
+            self.session.add(
+                AgentLogRecord(
+                    run_id=run_id,
+                    step_run_id=step_run.id,
+                    stream=log.stream,
+                    sequence=sequence,
+                    content=log.content,
+                )
+            )
+
+        artifact_metadata: list[dict[str, Any]] = []
+        for artifact in outcome.artifacts:
+            self.session.add(
+                Artifact(
+                    run_id=run_id,
+                    step_run_id=step_run.id,
+                    relative_path=artifact.relative_path,
+                    storage_path=str(artifact.storage_path),
+                    content_type=artifact.content_type,
+                    size_bytes=artifact.size_bytes,
+                    sha256=artifact.sha256,
+                )
+            )
+            artifact_metadata.append(self._artifact_metadata(artifact))
+
+        output = dict(outcome.output or {})
+        if artifact_metadata:
+            output["artifacts"] = artifact_metadata
+        return output
+
+    @staticmethod
+    def _artifact_metadata(artifact: AgentArtifact) -> dict[str, Any]:
+        return {
+            "relativePath": artifact.relative_path,
+            "contentType": artifact.content_type,
+            "sizeBytes": artifact.size_bytes,
+            "sha256": artifact.sha256,
+        }

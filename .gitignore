@@ -19,6 +19,7 @@ npm-debug.log*
 # Local application state
 .env
 .env.*
+!.env.example
 backend/.agentflow/
 backend/data/
 backend/.runtime/

@@ -8,6 +8,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import text
 
+from app.api.artifacts import router as artifacts_router
+from app.api.providers import router as providers_router
 from app.api.runs import router as runs_router
 from app.core.config import get_settings
 from app.core.errors import error_response, install_error_handlers
@@ -83,6 +85,8 @@ def create_app() -> FastAPI:
 
     install_error_handlers(app)
     app.include_router(runs_router)
+    app.include_router(providers_router)
+    app.include_router(artifacts_router)
 
     @app.exception_handler(RunNotFoundError)
     async def handle_run_not_found(request: Request, exc: RunNotFoundError):

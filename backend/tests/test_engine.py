@@ -1,30 +1,15 @@
 import asyncio
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.db.models import Base, RunEvent, StepRun, User, utc_now
+from app.db.models import RunEvent, StepRun, utc_now
 from app.engine.executor import FlowEngine
 from app.engine.manager import RunTaskManager
 from app.engine.runs import RunService, recover_interrupted_runs
 from app.flows.schema import parse_flow_definition
 from app.flows.service import FlowService
-
-
-@pytest.fixture
-def execution_session():
-    engine = create_engine(
-        "sqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-    )
-    Base.metadata.create_all(engine)
-    with Session(engine) as session:
-        owner = User(id="owner", username="owner", password_hash="hash", role="editor")
-        session.add(owner)
-        session.flush()
-        yield session
-    Base.metadata.drop_all(engine)
 
 
 def definition() -> dict:

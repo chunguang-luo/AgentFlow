@@ -5,6 +5,8 @@ services:
     environment:
       AGENTFLOW_ENV: production
       AGENTFLOW_DB_PATH: /data/agentflow/agentflow.db
+      AGENTFLOW_WORKSPACE_ROOT: /data/agentflow/workspaces
+      AGENTFLOW_ARTIFACT_ROOT: /data/agentflow/artifacts
       AGENTFLOW_LOG_LEVEL: INFO
     volumes:
       - agentflow-data:/data/agentflow

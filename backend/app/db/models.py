@@ -175,5 +175,48 @@ class RunEvent(Base):
 Index("ix_run_events_run_sequence", RunEvent.run_id, RunEvent.sequence)
 
 
+class AgentLogRecord(Base):
+    __tablename__ = "agent_logs"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: new_id("log"))
+    run_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("runs.id", ondelete="CASCADE"), index=True
+    )
+    step_run_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("step_runs.id", ondelete="CASCADE"), index=True
+    )
+    stream: Mapped[str] = mapped_column(String(10))
+    sequence: Mapped[int]
+    content: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    __table_args__ = (
+        UniqueConstraint("step_run_id", "sequence", name="uq_agent_log_sequence"),
+        CheckConstraint("stream IN ('stdout', 'stderr', 'system')", name="ck_agent_log_stream"),
+    )
+
+
+class Artifact(Base):
+    __tablename__ = "artifacts"
+
+    id: Mapped[str] = mapped_column(
+        String(64), primary_key=True, default=lambda: new_id("artifact")
+    )
+    run_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("runs.id", ondelete="CASCADE"), index=True
+    )
+    step_run_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("step_runs.id", ondelete="CASCADE"), index=True
+    )
+    relative_path: Mapped[str] = mapped_column(String(512))
+    storage_path: Mapped[str] = mapped_column(String(1024))
+    content_type: Mapped[str] = mapped_column(String(100), default="application/octet-stream")
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    sha256: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    __table_args__ = (UniqueConstraint("run_id", "relative_path", name="uq_run_artifact_path"),)
+
+
 Index("ix_runs_flow_created", Run.flow_id, Run.created_at)
 Index("ix_step_runs_run_step", StepRun.run_id, StepRun.step_id)

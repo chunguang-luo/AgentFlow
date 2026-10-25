@@ -7,7 +7,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from app.db.models import Run, RunEvent, StepRun
+from app.db.models import AgentLogRecord, Run, RunEvent, StepRun
 from app.db.session import SessionLocal, get_engine
 from app.engine.manager import run_task_manager
 from app.engine.runs import RunNotFoundError, RunService
@@ -39,6 +39,14 @@ class RunResponse(BaseModel):
     inputs: dict[str, Any]
     result: dict[str, Any] | None
     error: str | None
+
+
+class AgentLogResponse(BaseModel):
+    id: str
+    step_run_id: str
+    stream: str
+    sequence: int
+    content: str
 
 
 def serialize_run(run: Run) -> RunResponse:
@@ -185,3 +193,28 @@ async def stream_run_events(
                 await asyncio.sleep(0.1)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@router.get("/{run_id}/logs", response_model=list[AgentLogResponse])
+def get_run_logs(run_id: str, step_id: str | None = None) -> list[AgentLogResponse]:
+    SessionLocal.configure(bind=get_engine())
+    with SessionLocal() as session:
+        RunService(session).get(run_id)
+        statement = (
+            select(AgentLogRecord, StepRun)
+            .join(StepRun, AgentLogRecord.step_run_id == StepRun.id)
+            .where(AgentLogRecord.run_id == run_id)
+            .order_by(StepRun.step_id, AgentLogRecord.sequence)
+        )
+        if step_id is not None:
+            statement = statement.where(StepRun.step_id == step_id)
+        return [
+            AgentLogResponse(
+                id=log.id,
+                step_run_id=log.step_run_id,
+                stream=log.stream,
+                sequence=log.sequence,
+                content=log.content,
+            )
+            for log, _step in session.execute(statement).all()
+        ]

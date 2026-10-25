@@ -2,6 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,6 +16,22 @@ class Settings(BaseSettings):
     app_name: str = "AgentFlow"
     environment: Literal["development", "test", "production"] = "development"
     db_path: Path = Path(".agentflow/agentflow.db")
+    workspace_root: Path = Path(".agentflow/workspaces")
+    artifact_root: Path = Path(".agentflow/artifacts")
+    claude_cli_path: str = "claude"
+    codex_cli_path: str = "codex"
+    agent_env_allowlist: list[str] = [
+        "HOME",
+        "PATH",
+        "LANG",
+        "LC_ALL",
+        "TMPDIR",
+        "XDG_CONFIG_HOME",
+    ]
+    max_agent_output_bytes: int = Field(default=2_000_000, gt=0)
+    max_agent_log_bytes: int = Field(default=1_000_000, gt=0)
+    max_artifacts_per_step: int = Field(default=100, gt=0)
+    max_artifact_bytes: int = Field(default=100_000_000, gt=0)
     cors_origins: list[str] = []
     log_level: str = "INFO"
     api_prefix: str = "/api"

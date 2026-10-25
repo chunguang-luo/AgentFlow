@@ -112,6 +112,9 @@ class Run(Base):
     steps: Mapped[list["StepRun"]] = relationship(
         back_populates="run", cascade="all, delete-orphan"
     )
+    events: Mapped[list["RunEvent"]] = relationship(
+        back_populates="run", cascade="all, delete-orphan"
+    )
 
     __table_args__ = (
         CheckConstraint(
@@ -149,6 +152,27 @@ class StepRun(Base):
         ),
         UniqueConstraint("run_id", "step_id", "attempt", name="uq_step_run_attempt"),
     )
+
+
+class RunEvent(Base):
+    __tablename__ = "run_events"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: new_id("event"))
+    run_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("runs.id", ondelete="CASCADE"), index=True
+    )
+    sequence: Mapped[int]
+    event_type: Mapped[str] = mapped_column(String(50), index=True)
+    step_run_id: Mapped[str | None] = mapped_column(String(64))
+    data: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    run: Mapped[Run] = relationship(back_populates="events")
+
+    __table_args__ = (UniqueConstraint("run_id", "sequence", name="uq_run_event_sequence"),)
+
+
+Index("ix_run_events_run_sequence", RunEvent.run_id, RunEvent.sequence)
 
 
 Index("ix_runs_flow_created", Run.flow_id, Run.created_at)

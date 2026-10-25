@@ -3,15 +3,21 @@ import uuid
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import text
 
+from app.api.runs import router as runs_router
 from app.core.config import get_settings
-from app.core.errors import install_error_handlers
+from app.core.errors import error_response, install_error_handlers
 from app.core.logging import configure_logging
-from app.db.session import dispose_engine, get_engine
+from app.db.session import dispose_engine, get_engine, get_session
+from app.engine.runs import (
+    RunNotFoundError,
+    RunValidationError,
+    recover_interrupted_runs,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +32,11 @@ async def lifespan(app: FastAPI):
         connection.execute(text("PRAGMA journal_mode=WAL"))
         connection.execute(text("PRAGMA foreign_keys=ON"))
         connection.commit()
+
+    with next(get_session()) as session:
+        recovered = recover_interrupted_runs(session)
+        if recovered:
+            session.commit()
 
     logger.info(
         "AgentFlow backend started",
@@ -71,6 +82,25 @@ def create_app() -> FastAPI:
         return response
 
     install_error_handlers(app)
+    app.include_router(runs_router)
+
+    @app.exception_handler(RunNotFoundError)
+    async def handle_run_not_found(request: Request, exc: RunNotFoundError):
+        return error_response(
+            status_code=status.HTTP_404_NOT_FOUND,
+            code="run_not_found",
+            message=str(exc),
+            request=request,
+        )
+
+    @app.exception_handler(RunValidationError)
+    async def handle_run_validation(request: Request, exc: RunValidationError):
+        return error_response(
+            status_code=422,
+            code="run_validation_error",
+            message=str(exc),
+            request=request,
+        )
 
     def health_payload(database_status: str = "ok") -> HealthResponse:
         return HealthResponse(

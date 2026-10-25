@@ -4,7 +4,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.config import reset_settings_cache
-from app.db.session import dispose_engine
+from app.db.models import Base
+from app.db.session import dispose_engine, get_engine
 
 
 @pytest.fixture
@@ -16,6 +17,7 @@ def client(tmp_path, monkeypatch):
 
     reset_settings_cache()
     dispose_engine()
+    Base.metadata.create_all(bind=get_engine())
 
     import app.main
 
@@ -24,4 +26,5 @@ def client(tmp_path, monkeypatch):
         yield test_client
 
     reset_settings_cache()
+    Base.metadata.drop_all(bind=get_engine())
     dispose_engine()

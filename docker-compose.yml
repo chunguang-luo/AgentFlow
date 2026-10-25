@@ -8,6 +8,8 @@ services:
       AGENTFLOW_WORKSPACE_ROOT: /data/agentflow/workspaces
       AGENTFLOW_ARTIFACT_ROOT: /data/agentflow/artifacts
       AGENTFLOW_LOG_LEVEL: INFO
+      AGENTFLOW_BOOTSTRAP_ADMIN_USERNAME: admin
+      AGENTFLOW_BOOTSTRAP_ADMIN_PASSWORD: ${AGENTFLOW_BOOTSTRAP_ADMIN_PASSWORD:?set AGENTFLOW_BOOTSTRAP_ADMIN_PASSWORD}
     volumes:
       - agentflow-data:/data/agentflow
     ports:

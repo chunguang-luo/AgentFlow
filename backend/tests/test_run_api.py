@@ -63,6 +63,12 @@ def test_run_detail_steps_and_sse(client):
     assert "event: run.started" in events.text
     assert "event: run.succeeded" in events.text
 
+    cancel = client.post(f"/api/runs/{run_id}/cancel")
+    assert cancel.status_code == 200
+    audit = client.get("/api/audit-logs", params={"action": "run.cancelled"})
+    assert audit.status_code == 200
+    assert audit.json()["total"] >= 1
+
 
 def test_create_run_rejects_missing_required_input(client):
     SessionLocal.configure(bind=get_engine())

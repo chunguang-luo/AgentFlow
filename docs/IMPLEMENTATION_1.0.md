@@ -432,7 +432,7 @@ class AgentProvider(Protocol):
 
 ### 实现要求
 
-- 密码使用 Argon2id 或 bcrypt 哈希。
+- 密码使用 scrypt 哈希并加盐；实现中固定安全参数，不存储明文密码。
 - 会话 Token 使用服务端生成的随机值，Cookie 设置 `HttpOnly`、`SameSite=Lax`、`Secure`（HTTPS 下）。
 - CSRF 使用双提交 Cookie 或 SameSite 策略，写接口必须校验 Origin。
 - API 权限在服务端强制校验，前端隐藏按钮不作为安全边界。

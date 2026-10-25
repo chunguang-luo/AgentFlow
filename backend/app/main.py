@@ -9,8 +9,12 @@ from pydantic import BaseModel
 from sqlalchemy import text
 
 from app.api.artifacts import router as artifacts_router
+from app.api.audit import router as audit_router
+from app.api.flows import router as flows_router
 from app.api.providers import router as providers_router
 from app.api.runs import router as runs_router
+from app.auth.router import router as auth_router
+from app.auth.service import ensure_bootstrap_admin
 from app.core.config import get_settings
 from app.core.errors import error_response, install_error_handlers
 from app.core.logging import configure_logging
@@ -20,6 +24,7 @@ from app.engine.runs import (
     RunValidationError,
     recover_interrupted_runs,
 )
+from app.flows.service import FlowNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +44,7 @@ async def lifespan(app: FastAPI):
         recovered = recover_interrupted_runs(session)
         if recovered:
             session.commit()
+        ensure_bootstrap_admin(session)
 
     logger.info(
         "AgentFlow backend started",
@@ -84,9 +90,12 @@ def create_app() -> FastAPI:
         return response
 
     install_error_handlers(app)
+    app.include_router(auth_router)
+    app.include_router(flows_router)
     app.include_router(runs_router)
     app.include_router(providers_router)
     app.include_router(artifacts_router)
+    app.include_router(audit_router)
 
     @app.exception_handler(RunNotFoundError)
     async def handle_run_not_found(request: Request, exc: RunNotFoundError):
@@ -102,6 +111,15 @@ def create_app() -> FastAPI:
         return error_response(
             status_code=422,
             code="run_validation_error",
+            message=str(exc),
+            request=request,
+        )
+
+    @app.exception_handler(FlowNotFoundError)
+    async def handle_flow_not_found(request: Request, exc: FlowNotFoundError):
+        return error_response(
+            status_code=status.HTTP_404_NOT_FOUND,
+            code="flow_not_found",
             message=str(exc),
             request=request,
         )

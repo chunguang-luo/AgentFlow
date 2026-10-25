@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     cors_origins: list[str] = []
     log_level: str = "INFO"
     api_prefix: str = "/api"
+    session_ttl_minutes: int = Field(default=7 * 24 * 60, gt=0)
+    bootstrap_admin_username: str = "admin"
+    bootstrap_admin_password: str = ""
 
     model_config = SettingsConfigDict(env_prefix="AGENTFLOW_", env_file=".env", extra="ignore")
 

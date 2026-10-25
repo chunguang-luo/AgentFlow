@@ -56,6 +56,32 @@ make lint      # backend + frontend lint
 make migrate   # run database migrations
 ```
 
+## 认证与默认管理员
+
+业务 API 需要先登录。开发与测试环境首次启动会创建：
+
+```text
+username: admin
+password: agentflow-admin
+```
+
+登录后接口会同时返回 Bearer Token，并通过 `HttpOnly` Cookie 保存会话：
+
+```bash
+curl -c cookies.txt -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"agentflow-admin"}' \
+  http://localhost:8000/api/auth/login
+```
+
+生产环境必须显式配置：
+
+```bash
+AGENTFLOW_BOOTSTRAP_ADMIN_USERNAME=admin
+AGENTFLOW_BOOTSTRAP_ADMIN_PASSWORD=your-strong-password
+```
+
+系统内置 `admin`、`editor`、`operator`、`viewer` 四类角色，敏感操作会写入审计日志。
+
 ## Docker 部署
 
 ```bash

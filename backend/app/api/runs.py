@@ -1,18 +1,24 @@
 import asyncio
 import json
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import APIRouter, Header
+from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 
+from app.auth.dependencies import AuthContext, require_permission
+from app.core.audit import record_audit
 from app.db.models import AgentLogRecord, Run, RunEvent, StepRun
 from app.db.session import SessionLocal, get_engine
 from app.engine.manager import run_task_manager
 from app.engine.runs import RunNotFoundError, RunService
 
-router = APIRouter(prefix="/api/runs", tags=["runs"])
+router = APIRouter(
+    prefix="/api/runs",
+    tags=["runs"],
+    dependencies=[Depends(require_permission("runs:read"))],
+)
 
 
 class CreateRunRequest(BaseModel):
@@ -49,6 +55,13 @@ class AgentLogResponse(BaseModel):
     content: str
 
 
+class RunPage(BaseModel):
+    items: list[RunResponse]
+    total: int
+    page: int
+    page_size: int
+
+
 def serialize_run(run: Run) -> RunResponse:
     return RunResponse(
         id=run.id,
@@ -62,15 +75,28 @@ def serialize_run(run: Run) -> RunResponse:
 
 
 @router.post("", response_model=RunResponse, status_code=201)
-async def create_run(request: CreateRunRequest) -> RunResponse:
+async def create_run(
+    request_data: CreateRunRequest,
+    request: Request,
+    auth: AuthContext = Depends(require_permission("runs:execute")),
+) -> RunResponse:
     SessionLocal.configure(bind=get_engine())
     with SessionLocal() as session:
         run = RunService(session).create_run(
-            flow_id=request.flow_id,
-            flow_version=request.flow_version,
-            inputs=request.inputs,
-            created_by="local-development-user",
-            idempotency_key=request.idempotency_key,
+            flow_id=request_data.flow_id,
+            flow_version=request_data.flow_version,
+            inputs=request_data.inputs,
+            created_by=auth.user.id,
+            idempotency_key=request_data.idempotency_key,
+        )
+        record_audit(
+            session,
+            action="run.created",
+            target_type="run",
+            target_id=run.id,
+            user_id=auth.user.id,
+            details={"flow_id": run.flow_id, "flow_version": run.flow_version},
+            request=request,
         )
         session.commit()
         run_id = run.id
@@ -83,12 +109,44 @@ async def create_run(request: CreateRunRequest) -> RunResponse:
         return serialize_run(run)
 
 
-@router.get("", response_model=list[RunResponse])
-def list_runs() -> list[RunResponse]:
+@router.get("", response_model=RunPage)
+def list_runs(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    status: str | None = None,
+    flow_id: str | None = None,
+    created_by: str | None = None,
+    sort: Literal["created_at_desc", "created_at_asc", "status_asc"] = "created_at_desc",
+) -> RunPage:
     SessionLocal.configure(bind=get_engine())
     with SessionLocal() as session:
-        runs = session.scalars(select(Run).order_by(Run.created_at.desc()).limit(100)).all()
-        return [serialize_run(run) for run in runs]
+        statement = select(Run)
+        count_statement = select(func.count()).select_from(Run)
+        if status:
+            statement = statement.where(Run.status == status)
+            count_statement = count_statement.where(Run.status == status)
+        if flow_id:
+            statement = statement.where(Run.flow_id == flow_id)
+            count_statement = count_statement.where(Run.flow_id == flow_id)
+        if created_by:
+            statement = statement.where(Run.created_by == created_by)
+            count_statement = count_statement.where(Run.created_by == created_by)
+
+        order_by = {
+            "created_at_desc": Run.created_at.desc(),
+            "created_at_asc": Run.created_at.asc(),
+            "status_asc": Run.status.asc(),
+        }[sort]
+        runs = session.scalars(
+            statement.order_by(order_by).offset((page - 1) * page_size).limit(page_size)
+        ).all()
+        total = session.scalar(count_statement) or 0
+        return RunPage(
+            items=[serialize_run(run) for run in runs],
+            total=total,
+            page=page,
+            page_size=page_size,
+        )
 
 
 @router.get("/{run_id}", response_model=RunResponse)
@@ -120,11 +178,25 @@ def get_run_steps(run_id: str) -> list[StepRunResponse]:
 
 
 @router.post("/{run_id}/cancel", response_model=RunResponse)
-async def cancel_run(run_id: str) -> RunResponse:
+async def cancel_run(
+    run_id: str,
+    request: Request,
+    auth: AuthContext = Depends(require_permission("runs:cancel")),
+) -> RunResponse:
     SessionLocal.configure(bind=get_engine())
     with SessionLocal() as session:
         run = RunService(session).get(run_id)
         if run.status in {"succeeded", "failed", "cancelled", "timeout"}:
+            record_audit(
+                session,
+                action="run.cancelled",
+                target_type="run",
+                target_id=run_id,
+                user_id=auth.user.id,
+                details={"status": run.status},
+                request=request,
+            )
+            session.commit()
             return serialize_run(run)
 
     run_task_manager.cancel(run_id)
@@ -133,16 +205,51 @@ async def cancel_run(run_id: str) -> RunResponse:
         with SessionLocal() as session:
             run = RunService(session).get(run_id)
             if run.status == "cancelled":
+                record_audit(
+                    session,
+                    action="run.cancelled",
+                    target_type="run",
+                    target_id=run_id,
+                    user_id=auth.user.id,
+                    details={"status": run.status},
+                    request=request,
+                )
+                session.commit()
                 return serialize_run(run)
 
-    return serialize_run(run)
+    with SessionLocal() as session:
+        current_run = RunService(session).get(run_id)
+        record_audit(
+            session,
+            action="run.cancelled",
+            target_type="run",
+            target_id=run_id,
+            user_id=auth.user.id,
+            details={"status": current_run.status},
+            request=request,
+        )
+        session.commit()
+    return serialize_run(current_run)
 
 
 @router.post("/{run_id}/retry", response_model=RunResponse, status_code=201)
-async def retry_run(run_id: str) -> RunResponse:
+async def retry_run(
+    run_id: str,
+    request: Request,
+    auth: AuthContext = Depends(require_permission("runs:execute")),
+) -> RunResponse:
     SessionLocal.configure(bind=get_engine())
     with SessionLocal() as session:
-        run = RunService(session).retry(run_id, created_by="local-development-user")
+        run = RunService(session).retry(run_id, created_by=auth.user.id)
+        record_audit(
+            session,
+            action="run.retried",
+            target_type="run",
+            target_id=run.id,
+            user_id=auth.user.id,
+            details={"source_run_id": run_id},
+            request=request,
+        )
         session.commit()
         new_run_id = run.id
 

@@ -1,17 +1,22 @@
 from pathlib import Path
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 
+from app.auth.dependencies import require_permission
 from app.core.config import get_settings
 from app.core.errors import APIError
 from app.db.models import Artifact, Run
 from app.db.session import SessionLocal, get_engine
 from app.engine.runs import RunNotFoundError, RunService
 
-router = APIRouter(prefix="/api", tags=["artifacts"])
+router = APIRouter(
+    prefix="/api",
+    tags=["artifacts"],
+    dependencies=[Depends(require_permission("artifacts:read"))],
+)
 
 
 class ArtifactResponse(BaseModel):

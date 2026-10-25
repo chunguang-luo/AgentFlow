@@ -44,6 +44,10 @@ class User(Base):
         DateTime(timezone=True), default=utc_now, onupdate=utc_now
     )
 
+    sessions: Mapped[list["UserSession"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
+
     __table_args__ = (
         CheckConstraint("role IN ('admin', 'editor', 'operator', 'viewer')", name="ck_user_role"),
     )
@@ -216,6 +220,46 @@ class Artifact(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     __table_args__ = (UniqueConstraint("run_id", "relative_path", name="uq_run_artifact_path"),)
+
+
+class UserSession(Base):
+    __tablename__ = "sessions"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: new_id("session"))
+    user_id: Mapped[str] = mapped_column(String(64), ForeignKey("users.id"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    ip_address: Mapped[str | None] = mapped_column(String(64))
+    user_agent: Mapped[str | None] = mapped_column(String(512))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+    user: Mapped[User] = relationship(back_populates="sessions")
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: new_id("audit"))
+    user_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    action: Mapped[str] = mapped_column(String(50), index=True)
+    target_type: Mapped[str] = mapped_column(String(30), index=True)
+    target_id: Mapped[str | None] = mapped_column(String(64))
+    details: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    ip_address: Mapped[str | None] = mapped_column(String(64))
+    user_agent: Mapped[str | None] = mapped_column(String(512))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    __table_args__ = (
+        CheckConstraint(
+            "action IN ("
+            "'auth.login_succeeded', 'auth.login_failed', 'auth.logout', "
+            "'flow.created', 'flow.updated', 'flow.published', 'flow.imported', "
+            "'flow.exported', 'run.created', 'run.cancelled', 'run.retried', "
+            "'provider.health_checked')",
+            name="ck_audit_log_action",
+        ),
+    )
 
 
 Index("ix_runs_flow_created", Run.flow_id, Run.created_at)

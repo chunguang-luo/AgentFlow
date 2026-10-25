@@ -25,6 +25,11 @@ def client(tmp_path, monkeypatch):
 
     importlib.reload(app.main)
     with TestClient(app.main.app) as test_client:
+        test_client.headers.update({"Origin": "http://testserver"})
+        login = test_client.post(
+            "/api/auth/login", json={"username": "admin", "password": "agentflow-admin"}
+        )
+        assert login.status_code == 200
         yield test_client
 
     reset_settings_cache()

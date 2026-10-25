@@ -35,6 +35,8 @@ class StepRunResponse(BaseModel):
     status: str
     attempt: int
     error: str | None
+    input_snapshot: dict[str, Any] | None
+    output: dict[str, Any] | None
 
 
 class RunResponse(BaseModel):
@@ -172,6 +174,8 @@ def get_run_steps(run_id: str) -> list[StepRunResponse]:
                 status=step.status,
                 attempt=step.attempt,
                 error=step.error,
+                input_snapshot=step.input_snapshot,
+                output=step.output,
             )
             for step in steps
         ]

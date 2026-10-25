@@ -56,6 +56,8 @@ def test_run_detail_steps_and_sse(client):
     assert steps.status_code == 200
     assert steps.json()[0]["step_id"] == "analyze"
     assert steps.json()[0]["status"] == "succeeded"
+    assert steps.json()[0]["input_snapshot"]["prompt"] == "Analyze"
+    assert steps.json()[0]["output"]["text"].startswith("Mock output for ")
 
     events = client.get(f"/api/runs/{run_id}/events")
     assert events.status_code == 200
